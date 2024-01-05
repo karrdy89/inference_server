@@ -5,7 +5,7 @@ class RegisterService(BaseModel):
     URL: str
     LABEL: str
     TAG: str | None = None
-    TOKEN: bytes | None = None
+    TOKEN: str | None = None
     REGION: str
     ID: str
 
@@ -13,6 +13,6 @@ class RegisterService(BaseModel):
         extra = Extra.forbid
 
 
-class ListModels(BaseModel):
+class LoadModel(BaseModel):
     PRJ_ID: str
-    MODELS: list[str]
+    MODEL: str

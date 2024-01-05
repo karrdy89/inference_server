@@ -13,17 +13,20 @@ ROOT_DIR = os.path.dirname(
 
 KEY = Fernet.generate_key()
 ORIGIN = str(uuid.uuid4())
-TOKEN = Fernet(KEY).encrypt(ORIGIN.encode())
-print(TOKEN)
+TOKEN = Fernet(KEY).encrypt(ORIGIN.encode()).decode()
+
 
 class SystemEnvironments(BaseModel):
     NAME: str = "INFERENCE_SERVER"
     API_SERVER: str
+    TRITON_SERVER_URLS: list[str]
 
 
 configs = configparser.ConfigParser(allow_no_value=True)
 configs.read(ROOT_DIR+"/config/server_config.ini")
-SYSTEM_ENV = SystemEnvironments(API_SERVER=configs["DEFAULT"]["API_SERVER"])
+
+SYSTEM_ENV = SystemEnvironments(API_SERVER=configs["DEFAULT"]["API_SERVER"],
+                                TRITON_SERVER_URLS=(configs["TRITON_SERVER"]["URLS"].split(',')))
 
 
 @dataclass

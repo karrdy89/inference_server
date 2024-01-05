@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request, HTTPException
 import pydantic
 from cryptography.fernet import Fernet
@@ -53,7 +55,8 @@ class InferenceRouter:
         else:
             self._endpoints = {}
         self.router = APIRouter()
-        self.router.add_api_route("/model/reload", self.reload_model, methods=["POST"], response_model=res_vo.Base)
+        self.logger = logging.getLogger("root")
+        self.router.add_api_route("/model/load", self.load_model, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/model/unload", self.unload_model, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/service/run", self.add_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/service/stop", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
@@ -74,18 +77,42 @@ class InferenceRouter:
     def remove_endpoint(self):
         pass
 
-    def reload_model(self, req_body: req_vo.ListModels = Depends(validator_load_models)):
+    def load_model(self, req_body: req_vo.LoadModel = Depends(validator_load_models)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
-        for model in req_body.MODELS:
-            for triton_url in SYSTEM_ENV.TRITON_SERVERS:
-                url = f"{triton_url}/{RequestPath.MODEL_REPOSITORY_API}/{model}/load"
-                code, msg = request_util.post(url=url)
-        # request to all available triton server
-        # return result
+        loaded_servers = []
+        for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
+            url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MODEL}/load"
+            code, msg = request_util.post(url=url)
+            if code != 0:
+                for loaded_server in loaded_servers:
+                    rollback_url = loaded_server + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MODEL}/unload"
+                    code, msg = request_util.post(url=rollback_url)
+                    if code != 0:
+                        self.logger.error(msg=msg)
+                result_msg.CODE = RequestResult.FAIL
+                result_msg.ERROR_MSG = msg
+                return result_msg
+            else:
+                loaded_servers.append(triton_url)
         return result_msg
 
-    def unload_model(self, req_body: req_vo.ListModels = Depends(validator_load_models)):
+    def unload_model(self, req_body: req_vo.LoadModel = Depends(validator_load_models)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+        unloaded_servers = []
+        for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
+            url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MODEL}/unload"
+            code, msg = request_util.post(url=url)
+            if code != 0:
+                for unloaded_server in unloaded_servers:
+                    rollback_url = unloaded_server + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MODEL}/load"
+                    code, msg = request_util.post(url=rollback_url)
+                    if code != 0:
+                        self.logger.error(msg=msg)
+                result_msg.CODE = RequestResult.FAIL
+                result_msg.ERROR_MSG = msg
+                return result_msg
+            else:
+                unloaded_servers.append(triton_url)
         return result_msg
 
     # def inference(self, request: req_vo.ABC = Depends(...)):
