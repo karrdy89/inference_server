@@ -15,4 +15,24 @@ class RegisterService(BaseModel):
 
 class LoadModel(BaseModel):
     PRJ_ID: str
-    MODEL: str
+    MDL_KEY: str
+    VERSIONS: list
+    LATEST: int | None
+
+
+class UnloadModel(BaseModel):
+    PRJ_ID: str
+    MDL_KEY: str
+    VERSIONS: list
+
+
+class LoadEnsemble(BaseModel):
+    PRJ_ID: str
+    MDL_KEY: str
+
+
+class CreateEndpoint(BaseModel):
+    PRJ_ID: str
+    MLD_KEY: str
+    VERSION: int | None = None
+    SVC_NM: str
