@@ -1,9 +1,12 @@
+import json
 import logging
 import time
 import traceback
 from multiprocessing import Lock
+from itertools import cycle
 
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 import pydantic
 from cryptography.fernet import Fernet
 
@@ -11,8 +14,9 @@ import request_util
 import request_vo as req_vo
 import response_vo as res_vo
 from rw_util import RWUtil
-from utils import RollbackContext, create_version_policy, dict_to_model_config, model_config_to_dict, get_s3_path
-from _types import RequestResult, ModelVersionState, LoadModelState
+from utils import (RollbackContext, create_version_policy, dict_to_model_config, model_config_to_dict, get_s3_path,
+                   make_inference_input, create_service_path, create_kserve_inference_path)
+from _types import RequestResult, ModelVersionState, LoadModelState, InferenceServiceDef, InferenceServiceDesc
 from _constants import KEY, ORIGIN, SYSTEM_ENV, RequestPath, MAX_RETRY, RETRY_DELAY, MODEL_CONFIG_FILENAME, ModelStore
 
 
@@ -37,11 +41,23 @@ async def validator_unload_model(request: Request) -> req_vo.UnloadModel:
     else:
         return response
 
+
 async def validator_load_ensemble(request: Request) -> req_vo.LoadEnsemble:
     validate_header(request.headers)
     try:
         body = await request.json()
         response = req_vo.LoadEnsemble(**body)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Validation Error")
+    else:
+        return response
+
+
+async def validator_create_endpoint(request: Request) -> req_vo.CreateEndpoint:
+    validate_header(request.headers)
+    try:
+        body = await request.json()
+        response = req_vo.CreateEndpoint(**body)
     except Exception:
         raise HTTPException(status_code=422, detail="Validation Error")
     else:
@@ -81,11 +97,19 @@ class InferenceRouter:
             self._endpoints = {}
         self.rw_util = RWUtil()
 
+        self._cycle_triton_server = cycle(SYSTEM_ENV.TRITON_SERVER_URLS)
+
         self._lock_loaded_models: Lock = Lock()
         self._loaded_models: dict[str, ModelVersionState] = {}
 
         self._lock_update_config: Lock = Lock()
         self._update_config_state: dict[str, LoadModelState] = {}
+
+        self._lock_routing_table_infer: Lock = Lock()
+        self._routing_table_infer: dict[str, InferenceServiceDef] = {}
+
+        self._lock_routing_table_desc: Lock = Lock()
+        self._routing_table_desc: dict[str, InferenceServiceDesc] = {}
 
         self.router = APIRouter()
         self.logger = logging.getLogger("root")
@@ -109,18 +133,66 @@ class InferenceRouter:
     def add_api_route(self, path: str, func: callable, methods: list[str], response_model: pydantic.BaseModel):
         self.router.add_api_route(path, func, methods=methods, response_model=response_model)
 
-    def create_endpoint(self, req_body: req_vo.CreateEndpoint):
-        # authorize method
-        # set service discover
-        # give token for auth method
-        # auth with depends
+    def create_endpoint(self, req_body: req_vo.CreateEndpoint = Depends(validator_create_endpoint)):
+        result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+        path_infer, path_desc = create_service_path(project=req_body.PRJ_ID, name=req_body.SVC_NM)
+        with self._lock_routing_table_infer:
+            if path_infer in self._routing_table_infer:
+                result_msg.ERROR_MSG = f"endpoint '{req_body.EP_ID}' already exist"
+                return result_msg
+
+            path = create_kserve_inference_path(model_name=req_body.MLD_KEY, version=req_body.VERSION)
+            if req_body.USE_SEQUENCE:
+                url = self.get_suitable_server() + path
+                inference_service_definition = InferenceServiceDef(path=path, schema=req_body.INPUT_SCHEMA, url=url)
+                inference_service_description = InferenceServiceDesc(path=path, desc={}, url=url)
+            else:
+                inference_service_definition = InferenceServiceDef(path=path, schema=req_body.INPUT_SCHEMA)
+                inference_service_description = InferenceServiceDesc(path=path, desc={})
+            self._routing_table_infer[path_infer] = inference_service_definition
+
+
         # https://172.20.30.157:xxxx/project_id/service_name/infer ["POST"]
-        # https://172.20.30.157:xxxx/project_id/service_name ["GET"]
+        # https://172.20.30.157:xxxx/project_id/service_name/desc ["GET"]
         # service name must unique
         pass
 
-    def remove_endpoint(self):
-        pass
+    def remove_endpoint(self, request: Request, req_body: req_vo.InferenceInput):
+        print(request.url.path, req_body)
+        return res_vo.Base(CODE="00", ERROR_MSG="")
+
+    def _get_inference_url_schema(self, key: str) -> tuple[str, list[tuple[str, str]]]:
+        inference_service_def = self._routing_table_infer[key]
+        url = next(self._cycle_triton_server) + inference_service_def.path
+        return url, inference_service_def.schema
+
+    def _get_inference_url_schema_sequence(self, key: str) -> tuple[str, list[tuple[str, str]]]:
+        inference_service_def = self._routing_table_infer[key]
+        return inference_service_def.url, inference_service_def.schema
+
+    def make_inference(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
+        path = request.url.path
+        try:
+            url, schema = self._get_inference_url_schema(key=path)
+        except Exception as exc:
+            self.logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+            return JSONResponse(status_code=400, content={"error": "failed to find service"})
+        inputs = make_inference_input(schema=schema, inputs=req_body.inputs)
+        code, msg = request_util.post(url=url, data=inputs)
+        if code != 0:
+            return JSONResponse(status_code=400, content=json.loads(msg))
+        else:
+            return {"outputs": msg["outputs"]}
+
+    def make_inference_sequence(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
+        path = request.url.path
+        url, schema = self._get_inference_url_schema_sequence(key=path)
+        inputs = make_inference_input(schema=schema, inputs=req_body.inputs)
+        code, msg = request_util.post(url=url, data=inputs)
+        if code != 0:
+            return JSONResponse(status_code=400, content=json.loads(msg))
+        else:
+            return {"outputs": msg["outputs"]}
 
     def load_ensemble(self, req_body: req_vo.LoadEnsemble = Depends(validator_load_ensemble)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
@@ -380,11 +452,5 @@ class InferenceRouter:
         if load_model_state.is_update_config_set:
             self.remove_update_config_state(model_key=model_key)
 
-
-    # def inference(self, request: req_vo.ABC = Depends(...)):
-    #     # get key from path
-    #     # check monitoring state
-    #     # check model name, version
-    #     # request to http://triton_1:xxxx/v2/models/model_name/versions/n/infer -d DATA
-    #     # save input / output if monitored
-    #     return {}
+    def get_suitable_server(self) -> str:
+        return SYSTEM_ENV.TRITON_SERVER_URLS[0]

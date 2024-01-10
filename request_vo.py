@@ -33,6 +33,18 @@ class LoadEnsemble(BaseModel):
 
 class CreateEndpoint(BaseModel):
     PRJ_ID: str
+    EP_ID: str
     MLD_KEY: str
+    INPUT_SCHEMA: list[tuple[str, str]]
     VERSION: int | None = None
     SVC_NM: str
+    USE_SEQUENCE: bool = False
+
+
+class InputSpec(BaseModel):
+    name: str
+    data: list
+
+
+class InferenceInput(BaseModel):
+    inputs: list[InputSpec]
