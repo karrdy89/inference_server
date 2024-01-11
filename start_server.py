@@ -8,7 +8,7 @@ from _constants import ROOT_DIR, SYSTEM_ENV
 
 app = FastAPI()
 
-inference_router = InferenceRouter()
+inference_router = InferenceRouter(app=app)
 app.include_router(inference_router.router)
 
 uv_conf = {"app": "start_server:app",

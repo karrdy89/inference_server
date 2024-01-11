@@ -9,6 +9,12 @@ class RequestResult:
     FAIL: str = "10"
 
 
+class InferenceIO(BaseModel):
+    name: str
+    datatype: str
+    dims: list
+
+
 @dataclass
 class InferenceServiceDef:
     path: str
@@ -17,20 +23,12 @@ class InferenceServiceDef:
 
 
 @dataclass
-class InferenceServiceDesc:
-    path: str
-    desc: dict
-    url: str | None = None
-
-
-@dataclass
 class InterfaceSchema:
+    DATA: dict[str, list]
+
+
+class ServiceDescription(BaseModel):
     URL: str
-    FIELD: list[dict]
-
-
-@dataclass
-class ServiceDescription:
     REQUEST: InterfaceSchema
     RESPONSE: InterfaceSchema
 

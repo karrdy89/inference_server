@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Extra
 
+from _types import InferenceIO
+
 
 class RegisterService(BaseModel):
     URL: str
@@ -35,10 +37,16 @@ class CreateEndpoint(BaseModel):
     PRJ_ID: str
     EP_ID: str
     MLD_KEY: str
-    INPUT_SCHEMA: list[tuple[str, str]]
+    INPUT_SCHEMA: list[InferenceIO]
+    OUTPUT_SCHEMA: list[InferenceIO]
     VERSION: int | None = None
     SVC_NM: str
     USE_SEQUENCE: bool = False
+
+
+class RemoveEndpoint(BaseModel):
+    PRJ_ID: str
+    SVC_NM: str
 
 
 class InputSpec(BaseModel):

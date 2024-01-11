@@ -8,3 +8,9 @@ class Base(BaseModel):
 
 class LoadedModels(Base):
     LOADED_MODELS: dict
+
+
+class ServiceDescribe(Base):
+    SERVICE_DESC: dict
+
+

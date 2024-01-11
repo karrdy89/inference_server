@@ -5,7 +5,7 @@ import traceback
 from multiprocessing import Lock
 from itertools import cycle
 
-from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
 import pydantic
 from cryptography.fernet import Fernet
@@ -15,8 +15,9 @@ import request_vo as req_vo
 import response_vo as res_vo
 from rw_util import RWUtil
 from utils import (RollbackContext, create_version_policy, dict_to_model_config, model_config_to_dict, get_s3_path,
-                   make_inference_input, create_service_path, create_kserve_inference_path)
-from _types import RequestResult, ModelVersionState, LoadModelState, InferenceServiceDef, InferenceServiceDesc
+                   make_inference_input, create_service_path, create_kserve_inference_path, create_service_description)
+from _types import RequestResult, ModelVersionState, LoadModelState, InferenceServiceDef, ServiceDescription, \
+    DATATYPE_MAP
 from _constants import KEY, ORIGIN, SYSTEM_ENV, RequestPath, MAX_RETRY, RETRY_DELAY, MODEL_CONFIG_FILENAME, ModelStore
 
 
@@ -64,6 +65,17 @@ async def validator_create_endpoint(request: Request) -> req_vo.CreateEndpoint:
         return response
 
 
+async def validator_remove_endpoint(request: Request) -> req_vo.RemoveEndpoint:
+    validate_header(request.headers)
+    try:
+        body = await request.json()
+        response = req_vo.RemoveEndpoint(**body)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Validation Error")
+    else:
+        return response
+
+
 def validate_header(headers):
     try:
         token = headers["Authorization"]
@@ -90,7 +102,8 @@ def is_valid_token(token: str) -> bool:
 
 
 class InferenceRouter:
-    def __init__(self, endpoints: dict | None = None):
+    def __init__(self, app: FastAPI, endpoints: dict | None = None):
+        self._app = app
         if endpoints is not None:
             self._endpoints: dict[str, dict[str, str]] = endpoints
         else:
@@ -109,7 +122,7 @@ class InferenceRouter:
         self._routing_table_infer: dict[str, InferenceServiceDef] = {}
 
         self._lock_routing_table_desc: Lock = Lock()
-        self._routing_table_desc: dict[str, InferenceServiceDesc] = {}
+        self._routing_table_desc: dict[str, ServiceDescription] = {}
 
         self.router = APIRouter()
         self.logger = logging.getLogger("root")
@@ -130,9 +143,6 @@ class InferenceRouter:
         result_msg.LOADED_MODELS = result_loaded_models
         return result_msg
 
-    def add_api_route(self, path: str, func: callable, methods: list[str], response_model: pydantic.BaseModel):
-        self.router.add_api_route(path, func, methods=methods, response_model=response_model)
-
     def create_endpoint(self, req_body: req_vo.CreateEndpoint = Depends(validator_create_endpoint)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
         path_infer, path_desc = create_service_path(project=req_body.PRJ_ID, name=req_body.SVC_NM)
@@ -142,24 +152,57 @@ class InferenceRouter:
                 return result_msg
 
             path = create_kserve_inference_path(model_name=req_body.MLD_KEY, version=req_body.VERSION)
+            infer_schema = []
+            for inference_io in req_body.INPUT_SCHEMA:
+                infer_schema.append((inference_io.name, DATATYPE_MAP[inference_io.datatype]))
             if req_body.USE_SEQUENCE:
                 url = self.get_suitable_server() + path
-                inference_service_definition = InferenceServiceDef(path=path, schema=req_body.INPUT_SCHEMA, url=url)
-                inference_service_description = InferenceServiceDesc(path=path, desc={}, url=url)
+                inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema, url=url)
+                self._app.add_api_route(path_infer, self.make_inference, methods=["POST"])
             else:
-                inference_service_definition = InferenceServiceDef(path=path, schema=req_body.INPUT_SCHEMA)
-                inference_service_description = InferenceServiceDesc(path=path, desc={})
+                inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema)
+                self._app.add_api_route(path_infer, self.make_inference_sequence, methods=["POST"])
             self._routing_table_infer[path_infer] = inference_service_definition
+        with self._lock_routing_table_desc:
+            inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_desc,
+                                                                       input_schema=req_body.INPUT_SCHEMA,
+                                                                       output_schema=req_body.OUTPUT_SCHEMA)
+            self._app.add_api_route(path_desc, self._get_service_description, methods=["GET"], response_model=res_vo.ServiceDescribe)
+            self._routing_table_desc[path_desc] = inference_service_description
+        return result_msg
 
+    def remove_router(self, path: str):
+        for idx, router in enumerate(self._app.routes):
+            if router.path_format == path:
+                del self._app.routes[idx]
+                break
+        else:
+            raise RuntimeError(f"failed to remove router {path}. doesn't exist")
 
-        # https://172.20.30.157:xxxx/project_id/service_name/infer ["POST"]
-        # https://172.20.30.157:xxxx/project_id/service_name/desc ["GET"]
-        # service name must unique
-        pass
+    def remove_endpoint(self, req_body: req_vo.RemoveEndpoint = Depends(validator_remove_endpoint)):
+        result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+        path_infer, path_desc = create_service_path(project=req_body.PRJ_ID, name=req_body.SVC_NM)
+        with self._lock_routing_table_infer:
+            if path_infer in self._routing_table_infer:
+                self.remove_router(path_infer)
+                del self._routing_table_infer[path_infer]
+        with self._lock_routing_table_desc:
+            if path_desc in self._routing_table_desc:
+                self.remove_router(path_desc)
+                del self._routing_table_infer[path_infer]
+        return result_msg
 
-    def remove_endpoint(self, request: Request, req_body: req_vo.InferenceInput):
-        print(request.url.path, req_body)
-        return res_vo.Base(CODE="00", ERROR_MSG="")
+    async def _get_service_description(self, request: Request):
+        result_msg = res_vo.ServiceDescribe(CODE=RequestResult.SUCCESS, ERROR_MSG='', SERVICE_DESC={})
+        path = request.url.path
+        if path in self._routing_table_desc:
+            service_description = self._routing_table_desc[path]
+            result_msg.SERVICE_DESC = service_description.dict()
+            return result_msg
+        else:
+            result_msg.CODE = RequestResult.FAIL
+            result_msg.ERROR_MSG = "service not exist"
+            return result_msg
 
     def _get_inference_url_schema(self, key: str) -> tuple[str, list[tuple[str, str]]]:
         inference_service_def = self._routing_table_infer[key]
@@ -170,7 +213,7 @@ class InferenceRouter:
         inference_service_def = self._routing_table_infer[key]
         return inference_service_def.url, inference_service_def.schema
 
-    def make_inference(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
+    async def make_inference(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
         path = request.url.path
         try:
             url, schema = self._get_inference_url_schema(key=path)
@@ -184,7 +227,7 @@ class InferenceRouter:
         else:
             return {"outputs": msg["outputs"]}
 
-    def make_inference_sequence(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
+    async def make_inference_sequence(self, request: Request, req_body: req_vo.InferenceInput, background_tasks: BackgroundTasks):
         path = request.url.path
         url, schema = self._get_inference_url_schema_sequence(key=path)
         inputs = make_inference_input(schema=schema, inputs=req_body.inputs)

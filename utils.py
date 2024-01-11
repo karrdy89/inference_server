@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 import numpy as np
 
 from _constants import MODEL_CONFIG_FILENAME
-from _types import DATATYPE_MAP
+from _types import InterfaceSchema, ServiceDescription, InferenceIO
 from request_vo import InputSpec
 
 
@@ -53,7 +53,7 @@ def make_inference_input(schema: list[tuple[str, str]], inputs: list[InputSpec])
             return JSONResponse(status_code=400, content={"error": f"input field is missing '{input_name}'"})
         else:
             shape = list(np.shape(data))
-            result["inputs"].append({"name": input_name, "shape": shape, "datatype": DATATYPE_MAP[data_type],
+            result["inputs"].append({"name": input_name, "shape": shape, "datatype": data_type,
                                      "data": data})
     return result
 
@@ -68,4 +68,14 @@ def create_kserve_inference_path(model_name: str, version: int | None = None) ->
     else:
         return f"/v2/models/{model_name}/versions/{version}/infer"
 
-def create_service_description() -> str:
+
+def create_service_description(url: str, input_schema: list[InferenceIO], output_schema: list[InferenceIO]) -> ServiceDescription:
+    inputs = []
+    for field in input_schema:
+        inputs.append({"name": field.name, "data": f"data of {field.name} # type: {field.datatype}, shape: {field.dims}"})
+    outputs = []
+    for field in output_schema:
+        outputs.append({"name": field.name, "datatype": field.datatype, "shape": field.dims, "data": f"inference result"})
+    input_schema = InterfaceSchema(DATA={"inputs": inputs})
+    output_schema = InterfaceSchema(DATA={"outputs": outputs})
+    return ServiceDescription(URL=url, REQUEST=input_schema, RESPONSE=output_schema)
