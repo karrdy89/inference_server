@@ -162,10 +162,10 @@ class InferenceRouter:
             if req_body.USE_SEQUENCE:
                 url = self.get_suitable_server() + path
                 inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema, url=url)
-                self._app.add_api_route(path_infer, self.make_inference, methods=["POST"])
+                self._app.add_api_route(path_infer, self.make_inference_sequence, methods=["POST"])
             else:
                 inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema)
-                self._app.add_api_route(path_infer, self.make_inference_sequence, methods=["POST"])
+                self._app.add_api_route(path_infer, self.make_inference, methods=["POST"])
             self._routing_table_infer[path_infer] = inference_service_definition
         with self._lock_routing_table_desc:
             inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_infer,

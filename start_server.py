@@ -13,7 +13,7 @@ app.include_router(inference_router.router)
 
 uv_conf = {"app": "start_server:app",
            "host": "0.0.0.0",
-           "port": 10001,
+           "port": 7600,
            "log_config": ROOT_DIR+"/base_config/uv_log_config.ini"}
 
 
