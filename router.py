@@ -211,7 +211,6 @@ class InferenceRouter:
     def _get_inference_url_schema(self, key: str) -> tuple[str, list[tuple[str, str]]]:
         inference_service_def = self._routing_table_infer[key]
         url = next(self._cycle_triton_server) + inference_service_def.path
-        print(url)
         return url, inference_service_def.schema
 
     def _get_inference_url_schema_sequence(self, key: str) -> tuple[str, list[tuple[str, str]]]:
