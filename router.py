@@ -5,9 +5,8 @@ import traceback
 from multiprocessing import Lock
 from itertools import cycle
 
-from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks, FastAPI
+from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks, FastAPI, Query
 from fastapi.responses import JSONResponse
-import pydantic
 from cryptography.fernet import Fernet
 
 import request_util
@@ -76,6 +75,10 @@ async def validator_remove_endpoint(request: Request) -> req_vo.RemoveEndpoint:
         return response
 
 
+async def validate_token(request: Request) -> None:
+    validate_header(request.headers)
+
+
 def validate_header(headers):
     try:
         token = headers["Authorization"]
@@ -133,10 +136,15 @@ class InferenceRouter:
         self.router.add_api_route("/ensemble/unload", self.unload_ensemble, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/create", self.create_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/remove", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
-        self.router.add_api_route("/test", self.test, methods=["GET"])
+        self.router.add_api_route("/endpoint/list", self.list_endpoint, methods=["GET"])
 
-    def test(self):
-        print(self._routing_table_infer, self._routing_table_desc)
+    def list_endpoint(self, project: str = Query(default=None), auth: None = Depends(validate_token)):
+        endpoint_list = []
+        for path, desc in self._routing_table_desc.items():
+            # split project, service, request_type(infer, desc)
+            # assemble url + path per project
+            pass
+
 
     def get_loaded_models(self):
         result_msg = res_vo.LoadedModels(CODE=RequestResult.SUCCESS, ERROR_MSG='', LOADED_MODELS={})
