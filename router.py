@@ -133,6 +133,10 @@ class InferenceRouter:
         self.router.add_api_route("/ensemble/unload", self.unload_ensemble, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/create", self.create_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/remove", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
+        self.router.add_api_route("/test", self.test, methods=["GET"])
+
+    def test(self):
+        print(self._routing_table_infer, self._routing_table_desc)
 
     def get_loaded_models(self):
         result_msg = res_vo.LoadedModels(CODE=RequestResult.SUCCESS, ERROR_MSG='', LOADED_MODELS={})
@@ -151,7 +155,7 @@ class InferenceRouter:
                 result_msg.ERROR_MSG = f"endpoint '{req_body.EP_ID}' already exist"
                 return result_msg
 
-            path = create_kserve_inference_path(model_name=req_body.MLD_KEY, version=req_body.VERSION)
+            path = create_kserve_inference_path(model_name=req_body.MDL_KEY, version=req_body.VERSION)
             infer_schema = []
             for inference_io in req_body.INPUT_SCHEMA:
                 infer_schema.append((inference_io.name, DATATYPE_MAP[inference_io.datatype]))
@@ -164,7 +168,7 @@ class InferenceRouter:
                 self._app.add_api_route(path_infer, self.make_inference_sequence, methods=["POST"])
             self._routing_table_infer[path_infer] = inference_service_definition
         with self._lock_routing_table_desc:
-            inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_desc,
+            inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_infer,
                                                                        input_schema=req_body.INPUT_SCHEMA,
                                                                        output_schema=req_body.OUTPUT_SCHEMA)
             self._app.add_api_route(path_desc, self._get_service_description, methods=["GET"], response_model=res_vo.ServiceDescribe)
@@ -189,7 +193,7 @@ class InferenceRouter:
         with self._lock_routing_table_desc:
             if path_desc in self._routing_table_desc:
                 self.remove_router(path_desc)
-                del self._routing_table_infer[path_infer]
+                del self._routing_table_desc[path_desc]
         return result_msg
 
     async def _get_service_description(self, request: Request):
@@ -207,6 +211,7 @@ class InferenceRouter:
     def _get_inference_url_schema(self, key: str) -> tuple[str, list[tuple[str, str]]]:
         inference_service_def = self._routing_table_infer[key]
         url = next(self._cycle_triton_server) + inference_service_def.path
+        print(url)
         return url, inference_service_def.schema
 
     def _get_inference_url_schema_sequence(self, key: str) -> tuple[str, list[tuple[str, str]]]:

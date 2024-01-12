@@ -36,7 +36,7 @@ class LoadEnsemble(BaseModel):
 class CreateEndpoint(BaseModel):
     PRJ_ID: str
     EP_ID: str
-    MLD_KEY: str
+    MDL_KEY: str
     INPUT_SCHEMA: list[InferenceIO]
     OUTPUT_SCHEMA: list[InferenceIO]
     VERSION: int | None = None
