@@ -1,0 +1,11 @@
+.idea
+.git
+.gitignore
+__pycache__
+.dockerignore
+Dockerfile
+venv
+certification
+logs
+config
+cert
