@@ -136,15 +136,36 @@ class InferenceRouter:
         self.router.add_api_route("/ensemble/unload", self.unload_ensemble, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/create", self.create_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/remove", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
-        self.router.add_api_route("/endpoint/list", self.list_endpoint, methods=["GET"])
+        self.router.add_api_route("/endpoint/list", self.list_endpoint, methods=["GET"], response_model=res_vo.ListEndpoint)
 
     def list_endpoint(self, project: str = Query(default=None), auth: None = Depends(validate_token)):
+        result_msg = res_vo.ListEndpoint(CODE=RequestResult.SUCCESS, ERROR_MSG='', ENDPOINTS=[])
         endpoint_list = []
+        projects = {}
         for path, desc in self._routing_table_desc.items():
-            # split project, service, request_type(infer, desc)
-            # assemble url + path per project
-            pass
-
+            split_path = path.split('/')
+            t_project = split_path[1]
+            t_service_name = '/'.join(split_path[2:-1])
+            r_desc = desc.dict()
+            r_desc["NAME"] = t_service_name
+            r_desc["REGION"] = SYSTEM_ENV.DISCOVER_REGION
+            if t_project in projects:
+                projects[t_project]["SERVICES"].append(r_desc)
+            else:
+                projects[t_project] = {"SERVICES": [r_desc]}
+        if project is None:
+            for project_id, services in projects.items():
+                endpoint_list.append({"PROJECT": project_id, "SERVICES": services["SERVICES"]})
+            result_msg.ENDPOINTS = endpoint_list
+            return result_msg
+        else:
+            if project in projects:
+                result_msg.ENDPOINTS = projects[project]["SERVICES"]
+                return result_msg
+            else:
+                result_msg.CODE = RequestResult.FAIL
+                result_msg.ERROR_MSG = f"project '{project} not exist'"
+                return result_msg
 
     def get_loaded_models(self):
         result_msg = res_vo.LoadedModels(CODE=RequestResult.SUCCESS, ERROR_MSG='', LOADED_MODELS={})
@@ -384,6 +405,8 @@ class InferenceRouter:
                 raise RuntimeError(f"failed to update model config. max retry exceeded")
         self._update_config_state[model_key].is_update_config_set = True
         with RollbackContext(task=self.rollback_load_model, model_key=model_key):
+            if model_key not in self._loaded_models:
+                return result_msg
             loaded_version_state = self._loaded_models[model_key].states.copy()
             for version in req_body.VERSIONS:
                 if version in loaded_version_state:

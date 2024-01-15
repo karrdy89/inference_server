@@ -14,3 +14,8 @@ class ServiceDescribe(Base):
     SERVICE_DESC: dict
 
 
+class ListEndpoint(Base):
+    ENDPOINTS: list
+
+
+
