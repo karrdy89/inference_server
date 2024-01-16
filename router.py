@@ -15,8 +15,8 @@ import response_vo as res_vo
 from rw_util import RWUtil
 from utils import (RollbackContext, create_version_policy, dict_to_model_config, model_config_to_dict, get_s3_path,
                    make_inference_input, create_service_path, create_kserve_inference_path, create_service_description)
-from _types import RequestResult, ModelVersionState, LoadModelState, InferenceServiceDef, ServiceDescription, \
-    DATATYPE_MAP
+from _types import (RequestResult, ModelVersionState, LoadModelState, InferenceServiceDef, ServiceDescription,
+                    DATATYPE_MAP, InferenceIO)
 from _constants import KEY, ORIGIN, SYSTEM_ENV, RequestPath, MAX_RETRY, RETRY_DELAY, MODEL_CONFIG_FILENAME, ModelStore
 
 
@@ -69,6 +69,17 @@ async def validator_remove_endpoint(request: Request) -> req_vo.RemoveEndpoint:
     try:
         body = await request.json()
         response = req_vo.RemoveEndpoint(**body)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Validation Error")
+    else:
+        return response
+
+
+async def validator_update_endpoint(request: Request) -> req_vo.UpdateEndpoint:
+    validate_header(request.headers)
+    try:
+        body = await request.json()
+        response = req_vo.UpdateEndpoint(**body)
     except Exception:
         raise HTTPException(status_code=422, detail="Validation Error")
     else:
@@ -136,7 +147,78 @@ class InferenceRouter:
         self.router.add_api_route("/ensemble/unload", self.unload_ensemble, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/create", self.create_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/remove", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
+        self.router.add_api_route("/endpoint/update", self.update_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/list", self.list_endpoint, methods=["GET"], response_model=res_vo.ListEndpoint)
+
+        self._init_deploy()
+
+    def _init_deploy(self):
+        if SYSTEM_ENV.API_SERVER is not None:
+            url_init_loaded = SYSTEM_ENV.API_SERVER + RequestPath.INIT_SERVICES + f"?region={SYSTEM_ENV.DISCOVER_REGION}"
+            code, msg = request_util.get_from_system(url=url_init_loaded)
+            if code != 0:
+                raise RuntimeError(f"failed to initiate deploy state")
+            models = msg["MODELS"]
+            pipelines = msg["PIPELINES"]
+            services = msg["SERVICES"]
+
+            for model_key, model_info in models.items():
+                version_state = model_info["version_state"]
+                version_latest = model_info["latest"]
+                for url in SYSTEM_ENV.TRITON_SERVER_URLS:
+                    url_load_model = url + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
+                    code, msg = request_util.post(url=url_load_model)
+                    if code != 0:
+                        RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
+                self._loaded_models[model_key] = ModelVersionState(states=version_state, latest=version_latest)
+
+            for pipeline_key in pipelines:
+                for url in SYSTEM_ENV.TRITON_SERVER_URLS:
+                    url_load_model = url + f"{RequestPath.MODEL_REPOSITORY_API}/{pipeline_key}/load"
+                    code, msg = request_util.post(url=url_load_model)
+                    if code != 0:
+                        RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
+
+            for service in services:
+                service_name = service["SVC_NM"]
+                project_id = service["PRJ_ID"]
+                model_key = service["MDL_KEY"]
+                version = service["VERSION"]
+                use_sequence = service["USE_SEQUENCE"]
+                input_schema = service["INPUT_SCHEMA"]
+                output_schema = service["OUTPUT_SCHEMA"]
+
+                path_infer, path_desc = create_service_path(project=project_id, name=service_name)
+                path = create_kserve_inference_path(model_name=model_key, version=version)
+                infer_schema = []
+                for inference_io in input_schema:
+                    infer_schema.append((inference_io["name"], DATATYPE_MAP[inference_io["datatype"]]))
+                if use_sequence:
+                    url = self.get_suitable_server() + path
+                    inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema, url=url)
+                    self._app.add_api_route(path_infer, self.make_inference_sequence, methods=["POST"])
+                else:
+                    inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema)
+                    self._app.add_api_route(path_infer, self.make_inference, methods=["POST"])
+                self._routing_table_infer[path_infer] = inference_service_definition
+
+                desc_input_schema = []
+                for io_dict in input_schema:
+                    desc_input_schema.append(InferenceIO(**io_dict))
+
+                desc_output_schema = []
+                for io_dict in output_schema:
+                    desc_output_schema.append(InferenceIO(**io_dict))
+                inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_infer,
+                                                                           input_schema=desc_input_schema,
+                                                                           output_schema=desc_output_schema)
+                self._app.add_api_route(path_desc, self._get_service_description, methods=["GET"],
+                                        response_model=res_vo.ServiceDescribe)
+                self._routing_table_desc[path_desc] = inference_service_description
+            self.logger.info(f"initiate service state success.\n"
+                             f" --loaded models: {self._loaded_models}\n"
+                             f" --routing table(infer): {self._routing_table_infer}\n"
+                             f" --routing table(desc): {self._routing_table_desc}")
 
     def list_endpoint(self, project: str = Query(default=None), auth: None = Depends(validate_token)):
         result_msg = res_vo.ListEndpoint(CODE=RequestResult.SUCCESS, ERROR_MSG='', ENDPOINTS=[])
@@ -224,6 +306,32 @@ class InferenceRouter:
                 self.remove_router(path_desc)
                 del self._routing_table_desc[path_desc]
         return result_msg
+
+    def update_endpoint(self, req_body: req_vo.UpdateEndpoint = Depends(validator_update_endpoint)):
+        result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+        path_infer, path_desc = create_service_path(project=req_body.PRJ_ID, name=req_body.SVC_NM)
+        if path_infer in self._routing_table_infer and path_desc in self._routing_table_desc:
+            with self._lock_routing_table_infer:
+                path = create_kserve_inference_path(model_name=req_body.MDL_KEY, version=req_body.VERSION)
+                infer_schema = []
+                for inference_io in req_body.INPUT_SCHEMA:
+                    infer_schema.append((inference_io.name, DATATYPE_MAP[inference_io.datatype]))
+                if req_body.USE_SEQUENCE:
+                    url = self.get_suitable_server() + path
+                    inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema, url=url)
+                else:
+                    inference_service_definition = InferenceServiceDef(path=path, schema=infer_schema)
+                self._routing_table_infer[path_infer] = inference_service_definition
+            with self._lock_routing_table_desc:
+                inference_service_description = create_service_description(url=SYSTEM_ENV.DISCOVER_URL + path_infer,
+                                                                           input_schema=req_body.INPUT_SCHEMA,
+                                                                           output_schema=req_body.OUTPUT_SCHEMA)
+                self._routing_table_desc[path_desc] = inference_service_description
+                return result_msg
+        else:
+            result_msg.ERROR_MSG = f"service {req_body.SVC_NM} not exist."
+            result_msg.CODE = RequestResult.FAIL
+            return result_msg
 
     async def _get_service_description(self, request: Request):
         result_msg = res_vo.ServiceDescribe(CODE=RequestResult.SUCCESS, ERROR_MSG='', SERVICE_DESC={})

@@ -58,5 +58,7 @@ SYSTEM_ENV = SystemEnvironments(API_SERVER=configs["DEFAULT"]["API_SERVER"],
 class RequestPath:
     REGISTER_SERVICE: str = "/api/v0/service/register"
     CHECK_SERVICE_CONNECTION: str = "/api/v0/service"
+    INIT_SERVICES: str = "/api/v0/inference/state/services/ready"
+    TRITON_HEALTH_CHECK_API: str = "/v2/health/ready"
     MODEL_REPOSITORY_API: str = "/v2/repository/models"
     MODEL_API: str = "/v2/models"

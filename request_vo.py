@@ -56,3 +56,13 @@ class InputSpec(BaseModel):
 
 class InferenceInput(BaseModel):
     inputs: list[InputSpec]
+
+
+class UpdateEndpoint(BaseModel):
+    PRJ_ID: str
+    MDL_KEY: str
+    INPUT_SCHEMA: list[InferenceIO]
+    OUTPUT_SCHEMA: list[InferenceIO]
+    VERSION: int | None = None
+    SVC_NM: str
+    USE_SEQUENCE: bool = False

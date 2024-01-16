@@ -31,9 +31,12 @@ def get(url: str, options: dict | None = None) -> tuple[int, Any]:
         return -1, msg
     else:
         if response.status_code == 200:
-            return 0, None
+            if response.text == '':
+                return 0, None
+            else:
+                return 0, response.json()
         else:
-            return -1, response.json()
+            return -1, response.text
 
 
 def post_to_system(url: str, data: dict, options: dict | None = None, headers: dict | None = None,

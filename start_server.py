@@ -2,11 +2,20 @@ from fastapi import FastAPI
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 import uvicorn
 
+import request_util
 from router import InferenceRouter
 from service_state import ServiceState
-from _constants import ROOT_DIR, SYSTEM_ENV
+from _constants import ROOT_DIR, SYSTEM_ENV, RequestPath
 
 app = FastAPI()
+
+
+for url in SYSTEM_ENV.TRITON_SERVER_URLS:
+    url = url + RequestPath.TRITON_HEALTH_CHECK_API
+    code, msg = request_util.get(url=url)
+    if code != 0:
+        raise RuntimeError(f"triton server '{url}' not ready. health check failed")
+
 
 inference_router = InferenceRouter(app=app)
 app.include_router(inference_router.router)
@@ -31,9 +40,6 @@ uv_conf = uvicorn.Config(**uv_conf)
 class UvicornServer(uvicorn.Server):
     def install_signal_handlers(self):
         pass
-
-# check triton server
-# init deploy state
 
 
 if __name__ == "__main__":

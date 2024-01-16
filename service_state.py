@@ -9,6 +9,9 @@ import request_vo as req_vo
 import request_util
 
 
+logging.getLogger('apscheduler').setLevel(logging.WARN)
+
+
 def singleton(class_):
     instances = {}
 
