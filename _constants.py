@@ -13,7 +13,6 @@ ROOT_DIR = os.path.dirname(
 KEY = Fernet.generate_key()
 ORIGIN = str(uuid.uuid4())
 TOKEN = Fernet(KEY).encrypt(ORIGIN.encode()).decode()
-print(TOKEN)
 
 RETRY_DELAY = 0.2
 MAX_RETRY = 50
