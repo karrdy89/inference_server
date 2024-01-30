@@ -42,6 +42,17 @@ async def validator_unload_model(request: Request) -> req_vo.UnloadModel:
         return response
 
 
+async def validator_update_model_latest(request: Request) -> req_vo.ModelLatest:
+    validate_header(request.headers)
+    try:
+        body = await request.json()
+        response = req_vo.ModelLatest(**body)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Validation Error")
+    else:
+        return response
+
+
 async def validator_load_ensemble(request: Request) -> req_vo.LoadEnsemble:
     validate_header(request.headers)
     try:
@@ -149,6 +160,7 @@ class InferenceRouter:
         self.router.add_api_route("/endpoint/remove", self.remove_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/update", self.update_endpoint, methods=["POST"], response_model=res_vo.Base)
         self.router.add_api_route("/endpoint/list", self.list_endpoint, methods=["GET"], response_model=res_vo.ListEndpoint)
+        self.router.add_api_route("/model/update_latest", self.update_model_latest, methods=["POST"], response_model=res_vo.Base)
 
         self._init_deploy()
 
@@ -416,6 +428,84 @@ class InferenceRouter:
                 applied_servers.append(triton_url)
         return result_msg
 
+    def rollback_update_model_latest(self, model_key: str):
+        if model_key not in self._update_config_state:
+            self.logger.warning(f"failed to find {model_key} in update_config_state")
+            return
+        load_model_state = self._update_config_state[model_key]
+        if load_model_state.is_done:
+            self.remove_update_config_state(model_key=model_key)
+        else:
+            if load_model_state.is_uploaded:
+                try:
+                    self.rw_util.upload_object(bucket_name=ModelStore.BASE_PATH, data=load_model_state.config_backup,
+                                               target_path=f"{model_key}/{MODEL_CONFIG_FILENAME}")
+                except Exception as exc:
+                    self.logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+            if load_model_state.is_loaded:
+                for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
+                    url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
+                    code, msg = request_util.post(url=url)
+                    if code != 0:
+                        self.logger.error(msg=msg)
+            self.remove_update_config_state(model_key=model_key)
+
+    def update_model_latest(self, req_body: req_vo.ModelLatest = Depends(validator_update_model_latest)):
+        result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+        if self.update_config_xin(req_body.MDL_KEY):
+            for _ in range(MAX_RETRY):
+                time.sleep(RETRY_DELAY)
+                if not self.update_config_xin(req_body.MDL_KEY):
+                    break
+            else:
+                result_msg.ERROR_MSG = f"failed to update model config. max retry exceeded"
+                result_msg.CODE = RequestResult.FAIL
+                return result_msg
+        with RollbackContext(task=self.rollback_update_model_latest, model_key=req_body.MDL_KEY):
+            if req_body.MDL_KEY in self._loaded_models:
+                specific_versions = list(self._loaded_models[req_body.MDL_KEY].states.keys())
+                specific_versions = [req_body.LATEST_VER if x == -1 else x for x in specific_versions]
+                s3_path = get_s3_path(model_key=req_body.MDL_KEY)
+                version_policy = create_version_policy(specific_versions)
+                try:
+                    cur_config = self.rw_util.read_object(bucket_name=ModelStore.BASE_PATH, path=s3_path)
+                except Exception as exc:
+                    self.logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+                    result_msg.CODE = RequestResult.FAIL
+                    result_msg.ERROR_MSG = f"failed to read config from server"
+                    return result_msg
+                with self._lock_update_config:
+                    self._update_config_state[req_body.MDL_KEY].config_backup = cur_config
+                new_config = model_config_to_dict(cur_config)
+                new_config["versionPolicy"] = version_policy
+                new_config = dict_to_model_config(new_config)
+                try:
+                    self.rw_util.upload_object(bucket_name=ModelStore.BASE_PATH, data=new_config.encode(),
+                                               target_path=s3_path)
+                except Exception as exc:
+                    self.logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+                    result_msg.CODE = RequestResult.FAIL
+                    result_msg.ERROR_MSG = f"failed to upload config to server"
+                    return result_msg
+                with self._lock_update_config:
+                    self._update_config_state[req_body.MDL_KEY].is_uploaded = True
+
+                for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
+                    url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
+                    code, msg = request_util.post(url=url)
+                    if code != 0:
+                        result_msg.CODE = RequestResult.FAIL
+                        result_msg.ERROR_MSG = msg
+                        return result_msg
+                with self._lock_loaded_models:
+                    self._loaded_models[req_body.MDL_KEY].latest = req_body.LATEST_VER
+                with self._lock_update_config:
+                    self._update_config_state[req_body.MDL_KEY].is_loaded = True
+                    self._update_config_state[req_body.MDL_KEY].is_done = True
+            else:
+                self._update_config_state[req_body.MDL_KEY].is_done = True
+            return result_msg
+
     def load_model(self, req_body: req_vo.LoadModel = Depends(validator_load_model)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
         model_key = req_body.MDL_KEY
@@ -484,8 +574,7 @@ class InferenceRouter:
                     result_msg.CODE = RequestResult.FAIL
                     result_msg.ERROR_MSG = msg
                     return result_msg
-                else:
-                    self._update_config_state[model_key].is_loaded = True
+            self._update_config_state[model_key].is_loaded = True
 
             with self._lock_loaded_models:
                 for version in req_body.VERSIONS:

@@ -66,3 +66,10 @@ class UpdateEndpoint(BaseModel):
     VERSION: int | None = None
     SVC_NM: str
     USE_SEQUENCE: bool = False
+
+
+class ModelLatest(BaseModel):
+    PRJ_ID: str
+    MDL_KEY: str
+    LATEST_VER: int
+

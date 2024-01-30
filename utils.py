@@ -72,7 +72,7 @@ def create_kserve_inference_path(model_name: str, version: int | None = None) ->
 def create_service_description(url: str, input_schema: list[InferenceIO], output_schema: list[InferenceIO]) -> ServiceDescription:
     inputs = []
     for field in input_schema:
-        inputs.append({"name": field.name, "data": f"data of {field.name} # type: {field.datatype}, shape: {field.dims}"})
+        inputs.append({"name": field.name, "data": f"data of {field.name} # datatype: {field.datatype}, shape: {field.dims}"})
     outputs = []
     for field in output_schema:
         outputs.append({"name": field.name, "datatype": field.datatype, "shape": field.dims, "data": f"inference result"})
