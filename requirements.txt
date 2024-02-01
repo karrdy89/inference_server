@@ -4,7 +4,7 @@ boto3-type-annotations==0.3.1
 cryptography==41.0.7
 docker==7.0.0
 fastapi==0.108.0
-min-db==0.0.9
+min-db==0.0.13
 numpy==1.26.3
 requests==2.31.0
 uvicorn[standard]==0.25.0
