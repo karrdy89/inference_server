@@ -404,7 +404,7 @@ class InferenceRouter:
                         self.logger.error(msg=msg)
                 result_msg.CODE = RequestResult.FAIL
                 result_msg.ERROR_MSG = msg
-                return
+                return result_msg
             else:
                 applied_servers.append(triton_url)
         return result_msg
@@ -423,7 +423,7 @@ class InferenceRouter:
                         self.logger.error(msg=msg)
                 result_msg.CODE = RequestResult.FAIL
                 result_msg.ERROR_MSG = msg
-                return
+                return result_msg
             else:
                 applied_servers.append(triton_url)
         return result_msg
