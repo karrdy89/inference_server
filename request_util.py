@@ -67,8 +67,13 @@ def post_to_system(url: str, data: dict, options: dict | None = None, headers: d
 
 def get_from_system(url: str, options: dict | None = None, headers: dict | None = None,
                     target_system_name: str | None = None) -> tuple[int, Any]:
+    args = {"url": url}
+    if headers is not None:
+        args["headers"] = headers
+    if not SYSTEM_ENV.VERIFY_SSL:
+        args["verify"] = False
     try:
-        response = requests.get(url=url, verify=False)
+        response = requests.get(**args)
     except requests.exceptions.ConnectionError:
         msg = "connection error"
         if target_system_name is not None:
