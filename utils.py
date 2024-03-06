@@ -107,11 +107,12 @@ def calculate_block_bytes(d):
         return 0, 0
     r = 0
     w = 0
-    for _ in block_stats["io_service_bytes_recursive"]:
-        if _["op"] == "read":
-            r += _["value"]
-        elif _["op"] == "write":
-            w += _["value"]
+    if block_stats["io_service_bytes_recursive"] is not None:
+        for _ in block_stats["io_service_bytes_recursive"]:
+            if _["op"] == "read":
+                r += _["value"]
+            elif _["op"] == "write":
+                w += _["value"]
     return r, w
 
 
