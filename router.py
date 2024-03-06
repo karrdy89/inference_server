@@ -163,7 +163,7 @@ class InferenceRouter:
         self._init_deploy()
 
     def _init_deploy(self):
-        return # dev
+        # return # dev
         if SYSTEM_ENV.API_SERVER is not None:
             url_init_loaded = SYSTEM_ENV.API_SERVER + RequestPath.INIT_SERVICES + f"?region={SYSTEM_ENV.DISCOVER_REGION}"
             code, msg = request_util.get_from_system(url=url_init_loaded)
