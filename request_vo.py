@@ -1,15 +1,15 @@
 from pydantic import BaseModel, Extra
 
-from _types import InferenceIO
+from _types import InferenceIO, BaseServerStats
 
 
 class RegisterService(BaseModel):
     URL: str
     LABEL: str
     TAG: str | None = None
+    REGION: str | None = None
     TOKEN: str | None = None
-    REGION: str
-    ID: str
+    HEALTH_CHECK_PATH: str | None = None
 
     class Config:
         extra = Extra.forbid
@@ -72,4 +72,16 @@ class ModelLatest(BaseModel):
     PRJ_ID: str
     MDL_KEY: str
     LATEST_VER: int
+
+
+class ServerStat(BaseModel):
+    NAME: str
+    STATS: BaseServerStats
+
+
+class ServerStats(BaseModel):
+    SERVER_STATS: ServerStat
+    REGION: str | None = None
+    INTERVAL: int
+    URL: str
 

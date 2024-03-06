@@ -10,11 +10,10 @@ from _constants import ROOT_DIR, SYSTEM_ENV, RequestPath
 app = FastAPI()
 
 
-for url in SYSTEM_ENV.TRITON_SERVER_URLS:
-    url = url + RequestPath.TRITON_HEALTH_CHECK_API
-    code, msg = request_util.get(url=url)
-    if code != 0:
-        raise RuntimeError(f"triton server '{url}' not ready. health check failed")
+url = SYSTEM_ENV.TRITON_SERVER_URL + RequestPath.TRITON_HEALTH_CHECK_API
+code, msg = request_util.get(url=url)
+if code != 0:
+    raise RuntimeError(f"triton server '{SYSTEM_ENV.TRITON_SERVER_NAME}' not ready. health check failed")
 
 
 inference_router = InferenceRouter(app=app)

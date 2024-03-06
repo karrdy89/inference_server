@@ -135,8 +135,6 @@ class InferenceRouter:
             self._endpoints = {}
         self.rw_util = RWUtil()
 
-        self._cycle_triton_server = cycle(SYSTEM_ENV.TRITON_SERVER_URLS)
-
         self._lock_loaded_models: Lock = Lock()
         self._loaded_models: dict[str, ModelVersionState] = {}
 
@@ -165,6 +163,7 @@ class InferenceRouter:
         self._init_deploy()
 
     def _init_deploy(self):
+        return # dev
         if SYSTEM_ENV.API_SERVER is not None:
             url_init_loaded = SYSTEM_ENV.API_SERVER + RequestPath.INIT_SERVICES + f"?region={SYSTEM_ENV.DISCOVER_REGION}"
             code, msg = request_util.get_from_system(url=url_init_loaded)
@@ -177,19 +176,18 @@ class InferenceRouter:
             for model_key, model_info in models.items():
                 version_state = model_info["version_state"]
                 version_latest = model_info["latest"]
-                for url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                    url_load_model = url + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
-                    code, msg = request_util.post(url=url_load_model)
-                    if code != 0:
-                        RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
+
+                url_load_model = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
+                code, msg = request_util.post(url=url_load_model)
+                if code != 0:
+                    raise RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
                 self._loaded_models[model_key] = ModelVersionState(states=version_state, latest=version_latest)
 
             for pipeline_key in pipelines:
-                for url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                    url_load_model = url + f"{RequestPath.MODEL_REPOSITORY_API}/{pipeline_key}/load"
-                    code, msg = request_util.post(url=url_load_model)
-                    if code != 0:
-                        RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
+                url_load_model = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{pipeline_key}/load"
+                code, msg = request_util.post(url=url_load_model)
+                if code != 0:
+                    raise RuntimeError(f"failed to initiate deploy state. failed to load model {msg}")
 
             for service in services:
                 service_name = service["SVC_NM"]
@@ -359,7 +357,7 @@ class InferenceRouter:
 
     def _get_inference_url_schema(self, key: str) -> tuple[str, list[tuple[str, str]]]:
         inference_service_def = self._routing_table_infer[key]
-        url = next(self._cycle_triton_server) + inference_service_def.path
+        url = SYSTEM_ENV.TRITON_SERVER_URL + inference_service_def.path
         return url, inference_service_def.schema
 
     def _get_inference_url_schema_sequence(self, key: str) -> tuple[str, list[tuple[str, str]]]:
@@ -392,40 +390,22 @@ class InferenceRouter:
 
     def load_ensemble(self, req_body: req_vo.LoadEnsemble = Depends(validator_load_ensemble)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
-        applied_servers = []
-        for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-            url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
-            code, msg = request_util.post(url=url)
-            if code != 0:
-                for loaded_server in applied_servers:
-                    rollback_url = loaded_server + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/unload"
-                    code, msg = request_util.post(url=rollback_url)
-                    if code != 0:
-                        self.logger.error(msg=msg)
-                result_msg.CODE = RequestResult.FAIL
-                result_msg.ERROR_MSG = msg
-                return result_msg
-            else:
-                applied_servers.append(triton_url)
+        url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
+        code, msg = request_util.post(url=url)
+        if code != 0:
+            result_msg.CODE = RequestResult.FAIL
+            result_msg.ERROR_MSG = msg
+            return result_msg
         return result_msg
 
     def unload_ensemble(self, req_body: req_vo.LoadEnsemble = Depends(validator_load_ensemble)):
         result_msg = res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
-        applied_servers = []
-        for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-            url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/unload"
-            code, msg = request_util.post(url=url)
-            if code != 0:
-                for loaded_server in applied_servers:
-                    rollback_url = loaded_server + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
-                    code, msg = request_util.post(url=rollback_url)
-                    if code != 0:
-                        self.logger.error(msg=msg)
-                result_msg.CODE = RequestResult.FAIL
-                result_msg.ERROR_MSG = msg
-                return result_msg
-            else:
-                applied_servers.append(triton_url)
+        url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/unload"
+        code, msg = request_util.post(url=url)
+        if code != 0:
+            result_msg.CODE = RequestResult.FAIL
+            result_msg.ERROR_MSG = msg
+            return result_msg
         return result_msg
 
     def rollback_update_model_latest(self, model_key: str):
@@ -443,11 +423,10 @@ class InferenceRouter:
                 except Exception as exc:
                     self.logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
             if load_model_state.is_loaded:
-                for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                    url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
-                    code, msg = request_util.post(url=url)
-                    if code != 0:
-                        self.logger.error(msg=msg)
+                url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
+                code, msg = request_util.post(url=url)
+                if code != 0:
+                    self.logger.error(msg=msg)
             self.remove_update_config_state(model_key=model_key)
 
     def update_model_latest(self, req_body: req_vo.ModelLatest = Depends(validator_update_model_latest)):
@@ -490,13 +469,12 @@ class InferenceRouter:
                 with self._lock_update_config:
                     self._update_config_state[req_body.MDL_KEY].is_uploaded = True
 
-                for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                    url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
-                    code, msg = request_util.post(url=url)
-                    if code != 0:
-                        result_msg.CODE = RequestResult.FAIL
-                        result_msg.ERROR_MSG = msg
-                        return result_msg
+                url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
+                code, msg = request_util.post(url=url)
+                if code != 0:
+                    result_msg.CODE = RequestResult.FAIL
+                    result_msg.ERROR_MSG = msg
+                    return result_msg
                 with self._lock_loaded_models:
                     self._loaded_models[req_body.MDL_KEY].latest = req_body.LATEST_VER
                 with self._lock_update_config:
@@ -567,13 +545,12 @@ class InferenceRouter:
                 return result_msg
             self._update_config_state[model_key].is_uploaded = True
 
-            for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
-                code, msg = request_util.post(url=url)
-                if code != 0:
-                    result_msg.CODE = RequestResult.FAIL
-                    result_msg.ERROR_MSG = msg
-                    return result_msg
+            url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
+            code, msg = request_util.post(url=url)
+            if code != 0:
+                result_msg.CODE = RequestResult.FAIL
+                result_msg.ERROR_MSG = msg
+                return result_msg
             self._update_config_state[model_key].is_loaded = True
 
             with self._lock_loaded_models:
@@ -623,15 +600,14 @@ class InferenceRouter:
                     return result_msg
 
             if not set(new_specific_versions):
-                for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                    url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/unload"
-                    code, msg = request_util.post(url=url)
-                    if code != 0:
-                        result_msg.CODE = RequestResult.FAIL
-                        result_msg.ERROR_MSG = msg
-                        return result_msg
-                    else:
-                        self._update_config_state[model_key].is_loaded = True
+                url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/unload"
+                code, msg = request_util.post(url=url)
+                if code != 0:
+                    result_msg.CODE = RequestResult.FAIL
+                    result_msg.ERROR_MSG = msg
+                    return result_msg
+                else:
+                    self._update_config_state[model_key].is_loaded = True
                 with self._lock_loaded_models:
                     del self._loaded_models[model_key]
                 self._update_config_state[model_key].is_done = True
@@ -659,15 +635,15 @@ class InferenceRouter:
                 return result_msg
             self._update_config_state[model_key].is_uploaded = True
 
-            for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
-                code, msg = request_util.post(url=url)
-                if code != 0:
-                    result_msg.CODE = RequestResult.FAIL
-                    result_msg.ERROR_MSG = msg
-                    return result_msg
-                else:
-                    self._update_config_state[model_key].is_loaded = True
+            url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{req_body.MDL_KEY}/load"
+            code, msg = request_util.post(url=url)
+            if code != 0:
+                result_msg.CODE = RequestResult.FAIL
+                result_msg.ERROR_MSG = msg
+                return result_msg
+            else:
+                self._update_config_state[model_key].is_loaded = True
+
             with self._lock_loaded_models:
                 self._loaded_models[model_key].states = loaded_version_state
             self._update_config_state[model_key].is_done = True
@@ -719,13 +695,12 @@ class InferenceRouter:
             self.rw_util.upload_object(bucket_name=ModelStore.BASE_PATH, data=load_model_state.config_backup,
                                        target_path=f"{model_key}/{MODEL_CONFIG_FILENAME}")
         if load_model_state.is_loaded:
-            for triton_url in SYSTEM_ENV.TRITON_SERVER_URLS:
-                url = triton_url + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
-                code, msg = request_util.post(url=url)
-                if code != 0:
-                    self.logger.error(msg=msg)
+            url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_key}/load"
+            code, msg = request_util.post(url=url)
+            if code != 0:
+                self.logger.error(msg=msg)
         if load_model_state.is_update_config_set:
             self.remove_update_config_state(model_key=model_key)
 
     def get_suitable_server(self) -> str:
-        return SYSTEM_ENV.TRITON_SERVER_URLS[0]
+        return SYSTEM_ENV.TRITON_SERVER_URL
