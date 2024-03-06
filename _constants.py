@@ -57,7 +57,7 @@ SYSTEM_ENV = SystemEnvironments(API_SERVER=configs["DEFAULT"]["API_SERVER"],
                                 DISCOVER_REGION=configs["SERVICE_DISCOVER"]["REGION"],
                                 VERIFY_SSL=bool(int(configs["DEFAULT"]["VERIFY_SSL"])),
                                 TRITON_SERVER_URL=configs["TRITON_SERVER"]["URL"],
-                                TRITON_SERVER_NAME="TRITON",
+                                TRITON_SERVER_NAME=configs["TRITON_SERVER"]["CONTAINER_NAME"],
                                 TRITON_CONTAINER_NAME=configs["TRITON_SERVER"]["CONTAINER_NAME"])
 
 
