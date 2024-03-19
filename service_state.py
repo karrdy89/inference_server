@@ -5,11 +5,12 @@ import concurrent.futures
 from apscheduler.schedulers.background import BackgroundScheduler
 import docker
 
-from _constants import SYSTEM_ENV, RequestPath, TOKEN
+from _constants import SYSTEM_ENV, RequestPath, TOKEN, ROOT_LOGGER
 import request_vo as req_vo
 import request_util
 from _types import BaseContainerStats, BaseServerStats
 from utils import calculate_network_bytes, calculate_block_bytes, calculate_cpu_usage
+
 
 logging.getLogger('apscheduler').setLevel(logging.WARN)
 
@@ -30,9 +31,10 @@ class ServiceState:
     def __init__(self):
         self._is_connected: bool = False
         self._docker_client = docker.from_env()
-        self._logger = logging.getLogger("root")
+        self._logger = ROOT_LOGGER
         self._bg_scheduler = BackgroundScheduler()
         self._id = None
+        self._clusters = None
         self._bg_scheduler.start()
         self.register_service()
 
@@ -64,6 +66,12 @@ class ServiceState:
 
     def get_id(self) -> str:
         return self._id
+
+    def set_cluster(self, cluster: list[str]):
+        self._clusters = cluster
+
+    def get_cluster(self) -> list[str]:
+        return self._clusters
 
     def get_server_stats(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -127,6 +135,7 @@ def register_service():
     code, msg = request_util.post_to_system(url=url, data=req_body.dict())
     if code == 0:
         service_state.connection_success(msg["SID"])
+        service_state.set_cluster(msg["CLUSTER"])
     else:
         service_state.log_connection_failed()
 
@@ -144,3 +153,4 @@ def exchange_stats():
     code, msg = request_util.post_to_system(url=url, data=req_body.dict())
     if code != 0:
         service_state.connection_failed()
+

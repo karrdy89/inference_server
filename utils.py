@@ -11,6 +11,18 @@ from _types import InterfaceSchema, ServiceDescription, InferenceIO
 from request_vo import InputSpec
 
 
+class ConsensusTaskHandle:
+    def __init__(self, cluster: list[str], conflict_solver: Callable):
+        self._cluster = cluster
+        self._solver = conflict_solver
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 class RollbackContext:
     def __init__(self, task: Callable, **kwargs):
         self._task: Callable = task
@@ -59,7 +71,16 @@ def make_inference_input(schema: list[tuple[str, str]], inputs: list[InputSpec])
 
 
 def create_service_path(project: str, name: str) -> tuple[str, str]:
-    return f"/{project}/{name}/infer", f"/{project}/{name}/desc"
+    return f"/{project}/{name}/infer", create_desc_path(project, name)
+
+
+def create_desc_path(project: str, name: str) -> str:
+    return f"/{project}/{name}/desc"
+
+
+def dissemble_service_path(path: str) -> tuple[str, str]:
+    split_path = path.split('/')
+    return split_path[1], split_path[2]
 
 
 def create_kserve_inference_path(model_name: str, version: int | None = None) -> str:
@@ -69,16 +90,34 @@ def create_kserve_inference_path(model_name: str, version: int | None = None) ->
         return f"/v2/models/{model_name}/versions/{version}/infer"
 
 
-def create_service_description(url: str, input_schema: list[InferenceIO], output_schema: list[InferenceIO]) -> ServiceDescription:
+def dissemble_kserve_inference_path(path: str) -> tuple[str, str | None]:
+    split_path = path.split('/')
+    if len(split_path) <= 5:
+        return split_path[3], None
+    else:
+        return split_path[3], split_path[5]
+
+
+def create_service_description(url: str, input_desc: list[dict], output_desc: list[dict]) -> ServiceDescription:
+    input_schema = InterfaceSchema(DATA={"inputs": input_desc})
+    output_schema = InterfaceSchema(DATA={"outputs": output_desc})
+    return ServiceDescription(URL=url, REQUEST=input_schema, RESPONSE=output_schema)
+
+
+def create_input_description(input_schema: list[InferenceIO]) -> list[dict]:
     inputs = []
     for field in input_schema:
-        inputs.append({"name": field.name, "data": f"data of {field.name} # datatype: {field.datatype}, shape: {field.dims}"})
+        inputs.append({"name": field.name,
+                       "data": f"data of {field.name} # datatype: {field.datatype}, shape: {field.dims}"})
+    return inputs
+
+
+def create_output_description(output_schema: list[InferenceIO]) -> list[dict]:
     outputs = []
     for field in output_schema:
-        outputs.append({"name": field.name, "datatype": field.datatype, "shape": field.dims, "data": f"inference result"})
-    input_schema = InterfaceSchema(DATA={"inputs": inputs})
-    output_schema = InterfaceSchema(DATA={"outputs": outputs})
-    return ServiceDescription(URL=url, REQUEST=input_schema, RESPONSE=output_schema)
+        outputs.append({"name": field.name, "datatype": field.datatype,
+                        "shape": field.dims, "data": f"inference result"})
+    return outputs
 
 
 def calculate_cpu_usage(stats: dict):
@@ -132,3 +171,14 @@ def sizeof_fmt(num, suffix="B"):
             return f"{num:3.1f}{unit}{suffix}"
         num /= 1024.0
     return f"{num:.1f}Yi{suffix}"
+
+
+def singleton(class_):
+    instances = {}
+
+    def get_instance(*args, **kwargs):
+        if class_ not in instances:
+            instances[class_] = class_(*args, **kwargs)
+        return instances[class_]
+
+    return get_instance

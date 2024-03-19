@@ -85,3 +85,58 @@ class ServerStats(BaseModel):
     INTERVAL: int
     URL: str
 
+
+class PropLoadModel(BaseModel):
+    DATA: dict | None
+    KEY: str
+    VER: int
+
+
+class Key(BaseModel):
+    KEY: str
+
+
+class PropUnloadModel(BaseModel):
+    DATA: dict | None = None
+    KEY: str
+    VER: int
+    IS_TRITON_UPDATED: bool = False
+    IS_DELETED: bool = False
+
+
+class PropLoadEnsemble(BaseModel):
+    KEY: str
+    VER: int
+    PIPES: list[str] = []
+
+
+class PropCreateEndpoint(BaseModel):
+    INFER_KEY: str
+    INFER_VAL: dict
+    DESC_KEY: str
+    DESC_VAL: dict
+    VER: int
+
+
+class PropUpdateModelLatest(BaseModel):
+    KEY: str
+    STATE: dict
+    VER: int
+
+
+class OverwriteModelState(BaseModel):
+    KEY: str
+    STATE: dict
+
+
+class OverwriteEndpoints(BaseModel):
+    EP_INFER: dict
+    EP_DESC: dict
+
+
+class PropRemoveEndpoint(BaseModel):
+    PRJ_ID: str
+    SVC_NM: str
+    VER: int
+
+
