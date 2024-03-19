@@ -6,7 +6,7 @@ from protobuf import model_config_pb2
 from fastapi.responses import JSONResponse
 import numpy as np
 
-from _constants import MODEL_CONFIG_FILENAME
+from _constants import MODEL_CONFIG_FILENAME, SYSTEM_ENV
 from _types import InterfaceSchema, ServiceDescription, InferenceIO
 from request_vo import InputSpec
 
@@ -101,6 +101,8 @@ def dissemble_kserve_inference_path(path: str) -> tuple[str, str | None]:
 def create_service_description(url: str, input_desc: list[dict], output_desc: list[dict]) -> ServiceDescription:
     input_schema = InterfaceSchema(DATA={"inputs": input_desc})
     output_schema = InterfaceSchema(DATA={"outputs": output_desc})
+    if SYSTEM_ENV.LB_URL:
+        url = SYSTEM_ENV.LB_URL
     return ServiceDescription(URL=url, REQUEST=input_schema, RESPONSE=output_schema)
 
 

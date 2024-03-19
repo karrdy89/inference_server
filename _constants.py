@@ -47,6 +47,7 @@ class SystemEnvironments(BaseModel):
     TRITON_CONTAINER_NAME: str
     STAND_ALONE: bool
     CLUSTER_REQUEST_TIMEOUT: int
+    LB_URL: str
 
 
 configs = configparser.ConfigParser(allow_no_value=True)
@@ -66,6 +67,7 @@ SYSTEM_ENV = SystemEnvironments(API_SERVER=configs["DEFAULT"]["API_SERVER"],
                                 TRITON_SERVER_URL=configs["TRITON_SERVER"]["URL"],
                                 TRITON_SERVER_NAME=configs["TRITON_SERVER"]["CONTAINER_NAME"],
                                 TRITON_CONTAINER_NAME=configs["TRITON_SERVER"]["CONTAINER_NAME"],
+                                LB_URL=configs["SERVICE_DISCOVER"]["LB_URL"],
                                 CLUSTER_REQUEST_TIMEOUT=int(configs["DEFAULT"]["CLUSTER_REQUEST_TIMEOUT"]),
                                 STAND_ALONE=bool(int(configs["DEFAULT"]["STAND_ALONE"])))
 
