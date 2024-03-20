@@ -289,6 +289,12 @@ def append_cluster(url: str = Query()):
         return result_msg
 
 
+@router.get("/cluster/drop", response_model=res_vo.Base)
+def drop_server(url: str = Query()):
+    state_manager.drop_server(url)
+    return res_vo.Base(CODE=RequestResult.SUCCESS, ERROR_MSG='')
+
+
 @router.get(PropPath.ACQUIRE_TASK_HANDLE, response_model=res_vo.Agreement)
 def get_agreement(url: str = Query()):
     agreement = state_manager.acquire_handle(url)

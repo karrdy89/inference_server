@@ -236,15 +236,23 @@ class StateManager:
 
             path_infer, path_desc = create_service_path(project=project_id, name=service_name)
             path = create_kserve_inference_path(model_name=model_key, version=version)
-            infer_schema = []
-            for inference_io in input_schema:
-                infer_schema.append((inference_io["name"], DATATYPE_MAP[inference_io["datatype"]]))
-            if use_sequence:
-                url = get_suitable_server() + path
-                inference_service_definition = InferenceServiceDef(path=path, schema_=infer_schema, url=url)
+
+            if init_by_cluster:
+                inference_service_definition = InferenceServiceDef(**service["INFER_DEF"])
+            else:
+                infer_schema = []
+                for inference_io in input_schema:
+                    infer_schema.append((inference_io["name"], DATATYPE_MAP[inference_io["datatype"]]))
+                if use_sequence:
+                    url = get_suitable_server() + path
+                    inference_service_definition = InferenceServiceDef(path=path, schema_=infer_schema, url=url)
+                    # self._app.add_api_route(path_infer, self._make_inference_sequence, methods=["POST"])
+                else:
+                    inference_service_definition = InferenceServiceDef(path=path, schema_=infer_schema)
+                    # self._app.add_api_route(path_infer, self._make_inference, methods=["POST"])
+            if inference_service_definition.url is not None:
                 self._app.add_api_route(path_infer, self._make_inference_sequence, methods=["POST"])
             else:
-                inference_service_definition = InferenceServiceDef(path=path, schema_=infer_schema)
                 self._app.add_api_route(path_infer, self._make_inference, methods=["POST"])
             self._routing_table_infer[path_infer] = inference_service_definition
 
@@ -271,6 +279,11 @@ class StateManager:
                           f" --routing table(infer): {self._routing_table_infer}\n"
                           f" --routing table(desc): {self._routing_table_desc}")
         self._is_ready = True
+
+    def drop_server(self, url) -> None:
+        with self._lock_execute_handle:
+            self._cluster.remove(url)
+
 
     def append_cluster(self, url) -> TaskResult:
         task_result = TaskResult(CODE=TaskResultCode.DONE, MESSAGE='')
@@ -306,7 +319,7 @@ class StateManager:
                     for _ in output_desc_schema:
                         output_schema.append({"name": _["name"], "datatype": _["datatype"], "dims": _["shape"]})
                     services.append(ServiceEndpointInfo(SVC_NM=service_name, PRJ_ID=project, MDL_KEY=model_key,
-                                                        VERSION=version,
+                                                        VERSION=version, INFER_DEF=asdict(infer_def),
                                                         USE_SEQUENCE=use_seq, INPUT_SCHEMA=input_desc,
                                                         OUTPUT_SCHEMA=output_schema).dict())
                 ifr_svc_info = InferenceServiceStateInfo(MODELS=models, PIPELINES=pipelines, SERVICES=services)
@@ -493,7 +506,7 @@ class StateManager:
                 self._logger.error(msg=msg)
             self._loaded_models[prop_data.KEY] = ModelVersionState(**prop_data.DATA)
 
-    def unload_model(self, model_info: req_vo.UnloadModel):
+    def unload_model(self, model_info: req_vo.UnloadModel) -> TaskResult:
         task_result = TaskResult(CODE=TaskResultCode.DONE, MESSAGE='')
         model_key = model_info.MDL_KEY
         with self._consensus_task():
@@ -506,33 +519,61 @@ class StateManager:
                     raise RuntimeError(f"failed to update model config. max retry exceeded")
             self._update_config_state[model_key].is_update_config_set = True
             with RollbackContext(task=self._rollback_load_model, model_key=model_key):
-                if model_key not in self._loaded_models:
-                    return task_result
+                try:
+                    if model_key not in self._loaded_models:
+                        return task_result
+                    self._update_config_state[model_key].state_backup = copy.deepcopy(self._loaded_models[model_key])
+                    loaded_version_state = self._loaded_models[model_key].states.copy()
+                    for version in model_info.VERSIONS:
+                        if version in loaded_version_state:
+                            loaded_version_state[version] -= 1
+                            if loaded_version_state[version] <= 0:
+                                del loaded_version_state[version]
+                    latest = self._loaded_models[model_key].latest
+                    with self._lock_loaded_models:
+                        cur_specific_versions = list(self._loaded_models[model_key].states.keys())
+                    cur_specific_versions = [latest if x == -1 else x for x in cur_specific_versions]
+                    new_specific_versions = list(loaded_version_state.keys())
+                    new_specific_versions = [latest if x == -1 else x for x in new_specific_versions]
 
-                self._update_config_state[model_key].state_backup = copy.deepcopy(self._loaded_models[model_key])
-                loaded_version_state = self._loaded_models[model_key].states.copy()
-                for version in model_info.VERSIONS:
-                    if version in loaded_version_state:
-                        loaded_version_state[version] -= 1
-                        if loaded_version_state[version] <= 0:
-                            del loaded_version_state[version]
-                latest = self._loaded_models[model_key].latest
-                with self._lock_loaded_models:
-                    cur_specific_versions = list(self._loaded_models[model_key].states.keys())
-                cur_specific_versions = [latest if x == -1 else x for x in cur_specific_versions]
-                new_specific_versions = list(loaded_version_state.keys())
-                new_specific_versions = [latest if x == -1 else x for x in new_specific_versions]
+                    with self._lock_loaded_models:
+                        if set(new_specific_versions) == set(cur_specific_versions):
+                            self._loaded_models[model_key].states = loaded_version_state
 
-                with self._lock_loaded_models:
-                    if set(new_specific_versions) == set(cur_specific_versions):
-                        self._loaded_models[model_key].states = loaded_version_state
+                            # prop
+                            prop_urls = [u + PropPath.UNLOAD_MODEL for u in self._cluster if u != SYSTEM_ENV.DISCOVER_URL]
+                            if prop_urls:
+                                data = self._loaded_models[model_key].copy().dict()
+                                prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=False, KEY=model_key,
+                                                                   DATA=data, VER=self._modify_count).dict()
+                                success = propagate(urls=prop_urls, data=prop_data, ignore_error=True)
+                                if len(success) < len(prop_urls):
+                                    self._update_config_state[model_key].propagated = success
+                                    task_result.CODE = TaskResultCode.FAIL
+                                    task_result.MESSAGE = "failed to propagation"
+                                    return task_result
+
+                            self._update_config_state[model_key].is_done = True
+                            return task_result
+
+                    if not set(new_specific_versions):
+                        url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_info.MDL_KEY}/unload"
+                        code, msg = request_util.post(url=url)
+                        if code != 0:
+                            task_result.CODE = TaskResultCode.FAIL
+                            task_result.MESSAGE = msg
+                            return task_result
+                        else:
+                            self._update_config_state[model_key].is_loaded = True
+
+                        with self._lock_loaded_models:
+                            del self._loaded_models[model_key]
 
                         # prop
                         prop_urls = [u + PropPath.UNLOAD_MODEL for u in self._cluster if u != SYSTEM_ENV.DISCOVER_URL]
                         if prop_urls:
-                            data = self._loaded_models[model_key].copy().dict()
-                            prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=False, KEY=model_key,
-                                                               DATA=data, VER=self._modify_count).dict()
+                            prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=True, KEY=model_key,
+                                                               VER=self._modify_count, IS_DELETED=True).dict()
                             success = propagate(urls=prop_urls, data=prop_data, ignore_error=True)
                             if len(success) < len(prop_urls):
                                 self._update_config_state[model_key].propagated = success
@@ -543,8 +584,29 @@ class StateManager:
                         self._update_config_state[model_key].is_done = True
                         return task_result
 
-                if not set(new_specific_versions):
-                    url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_info.MDL_KEY}/unload"
+                    version_policy = create_version_policy(list(set(new_specific_versions)))
+                    s3_path = get_s3_path(model_key=model_key)
+                    try:
+                        cur_config = self._rw_util.read_object(bucket_name=ModelStore.BASE_PATH, path=s3_path)
+                    except Exception as exc:
+                        self._logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+                        task_result.CODE = TaskResultCode.FAIL
+                        task_result.MESSAGE = f"failed to read config from server"
+                        return task_result
+                    self._update_config_state[model_key].config_backup = cur_config
+                    new_config = model_config_to_dict(cur_config)
+                    new_config["versionPolicy"] = version_policy
+                    new_config = dict_to_model_config(new_config)
+                    try:
+                        self._rw_util.upload_object(bucket_name=ModelStore.BASE_PATH, data=new_config, target_path=s3_path)
+                    except Exception as exc:
+                        self._logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
+                        task_result.CODE = TaskResultCode.FAIL
+                        task_result.MESSAGE = f"failed to upload config to server"
+                        return task_result
+                    self._update_config_state[model_key].is_uploaded = True
+
+                    url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_info.MDL_KEY}/load"
                     code, msg = request_util.post(url=url)
                     if code != 0:
                         task_result.CODE = TaskResultCode.FAIL
@@ -554,13 +616,14 @@ class StateManager:
                         self._update_config_state[model_key].is_loaded = True
 
                     with self._lock_loaded_models:
-                        del self._loaded_models[model_key]
+                        self._loaded_models[model_key].states = loaded_version_state
 
                     # prop
                     prop_urls = [u + PropPath.UNLOAD_MODEL for u in self._cluster if u != SYSTEM_ENV.DISCOVER_URL]
                     if prop_urls:
-                        prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=True, KEY=model_key,
-                                                           VER=self._modify_count, IS_DELETED=True).dict()
+                        data = self._loaded_models[model_key].copy().dict()
+                        prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=True, KEY=model_key, DATA=data,
+                                                           VER=self._modify_count).dict()
                         success = propagate(urls=prop_urls, data=prop_data, ignore_error=True)
                         if len(success) < len(prop_urls):
                             self._update_config_state[model_key].propagated = success
@@ -570,56 +633,8 @@ class StateManager:
 
                     self._update_config_state[model_key].is_done = True
                     return task_result
-
-                version_policy = create_version_policy(list(set(new_specific_versions)))
-                s3_path = get_s3_path(model_key=model_key)
-                try:
-                    cur_config = self._rw_util.read_object(bucket_name=ModelStore.BASE_PATH, path=s3_path)
                 except Exception as exc:
-                    self._logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
-                    task_result.CODE = TaskResultCode.FAIL
-                    task_result.MESSAGE = f"failed to read config from server"
-                    return task_result
-                self._update_config_state[model_key].config_backup = cur_config
-                new_config = model_config_to_dict(cur_config)
-                new_config["versionPolicy"] = version_policy
-                new_config = dict_to_model_config(new_config)
-                try:
-                    self._rw_util.upload_object(bucket_name=ModelStore.BASE_PATH, data=new_config, target_path=s3_path)
-                except Exception as exc:
-                    self._logger.error(f"{exc.__str__()}, {traceback.format_exc()}")
-                    task_result.CODE = TaskResultCode.FAIL
-                    task_result.MESSAGE = f"failed to upload config to server"
-                    return task_result
-                self._update_config_state[model_key].is_uploaded = True
-
-                url = SYSTEM_ENV.TRITON_SERVER_URL + f"{RequestPath.MODEL_REPOSITORY_API}/{model_info.MDL_KEY}/load"
-                code, msg = request_util.post(url=url)
-                if code != 0:
-                    task_result.CODE = TaskResultCode.FAIL
-                    task_result.MESSAGE = msg
-                    return task_result
-                else:
-                    self._update_config_state[model_key].is_loaded = True
-
-                with self._lock_loaded_models:
-                    self._loaded_models[model_key].states = loaded_version_state
-
-                # prop
-                prop_urls = [u + PropPath.UNLOAD_MODEL for u in self._cluster if u != SYSTEM_ENV.DISCOVER_URL]
-                if prop_urls:
-                    data = self._loaded_models[model_key].copy().dict()
-                    prop_data = req_vo.PropUnloadModel(IS_TRITON_UPDATED=True, KEY=model_key, DATA=data,
-                                                       VER=self._modify_count).dict()
-                    success = propagate(urls=prop_urls, data=prop_data, ignore_error=True)
-                    if len(success) < len(prop_urls):
-                        self._update_config_state[model_key].propagated = success
-                        task_result.CODE = TaskResultCode.FAIL
-                        task_result.MESSAGE = "failed to propagation"
-                        return task_result
-
-                self._update_config_state[model_key].is_done = True
-                return task_result
+                    print(traceback.format_exc())
 
     def prop_unload_model(self, unload_info: req_vo.PropUnloadModel):
         if unload_info.VER > self._modify_count:
@@ -638,7 +653,7 @@ class StateManager:
                 if code != 0:
                     return TaskResult(CODE=TaskResultCode.FAIL, MESSAGE="failed to unload model on triton")
             model_info: ModelVersionState = ModelVersionState(**unload_info.DATA)
-            with self._loaded_models:
+            with self._lock_loaded_models:
                 self._loaded_models[unload_info.KEY] = model_info
             self._modify_count = unload_info.VER
             return TaskResult(CODE=TaskResultCode.DONE, MESSAGE='')
@@ -1256,9 +1271,11 @@ def prop_request(request_info: tuple):
     url = request_info[0]
     data = request_info[1]
     if data is None:
-        return url, request_util.get_from_system(url)
+        code, msg = request_util.get_from_system(url)
+        return url, code, msg
     else:
-        return url, request_util.post_to_system(url=url, data=data)
+        code, msg = request_util.post_to_system(url=url, data=data)
+        return url, code, msg
 
 
 def propagate(urls: list[str], data: dict | None = None, rollback_path: str | None = None,
@@ -1282,7 +1299,7 @@ def propagate(urls: list[str], data: dict | None = None, rollback_path: str | No
         with concurrent.futures.ThreadPoolExecutor() as executor:
             executor.map(prop_request, rollback_info)
     if ignore_error:
+        return success
+    else:
         if failed:
             raise RuntimeError(f"failed to propagate '{failed}'")
-    else:
-        return success

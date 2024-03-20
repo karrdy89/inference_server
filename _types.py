@@ -130,6 +130,7 @@ class ServiceEndpointInfo(BaseModel):
     MDL_KEY: str | None = None
     VERSION: int | None = None
     USE_SEQUENCE: bool = False
+    INFER_DEF: dict | None = None
     INPUT_SCHEMA: list[dict] | None = None
     OUTPUT_SCHEMA: list[dict] | None = None
 
